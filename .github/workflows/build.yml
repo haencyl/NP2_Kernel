@@ -57,6 +57,11 @@ on:
         required: false
         type: string
         default: "LineageOS"
+      ksu_ref:
+        description: "ReSukiSU/BakaSU git ref to pin. main/v4.2.0-rc3+ currently break SUSFS builds ('Please wait susfs update.'); keep v4.2.0-rc2 or older until SUSFS catches up"
+        required: false
+        type: string
+        default: "v4.2.0-rc2"
 
   workflow_call:
     inputs:
@@ -101,13 +106,16 @@ on:
         required: false
         type: string
         default: "LineageOS"
+      ksu_ref:
+        required: false
+        type: string
+        default: "v4.2.0-rc2"
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      UPLOAD_ARTIFACT_ACTION: ${{ github.server_url == 'https://git.miguvt.com' && 'actions/upload-artifact@v3' || 'actions/upload-artifact@v4' }}
       KERNEL_DIR: kernel
       ANYKERNEL_DIR: AnyKernel3
       DEFCONFIG: ${{ inputs.kernel_defconfig }}
@@ -175,10 +183,20 @@ jobs:
           git clone --depth=1 -b "${{ inputs.susfs_branch || 'gki-android13-5.10' }}" \
             https://gitlab.com/simonpunk/susfs4ksu.git
 
-      - name: Setup ReSukiSU
+      - name: Setup ReSukiSU (BakaSU) - pinned to ${{ inputs.ksu_ref }}
         run: |
+          # The ReSukiSU project renamed itself to "BakaSU" and its main branch
+          # (v4.2.0-rc3+) hard-fails SUSFS builds with "Please wait susfs update."
+          # until simonpunk's SUSFS catches up. Pin the source ref via ksu_ref
+          # (default v4.2.0-rc2) so builds are reproducible and working.
           cd "$KERNEL_DIR"
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
+          git clone --depth=1 --branch "${{ inputs.ksu_ref }}" \
+            https://github.com/Baka-SU/BakaSU.git KernelSU
+          ln -sf "$(realpath --relative-to="$KERNEL_DIR/drivers" "$KERNEL_DIR/KernelSU/kernel")" "$KERNEL_DIR/drivers/kernelsu"
+          grep -q "kernelsu" "$KERNEL_DIR/drivers/Makefile" || \
+            printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$KERNEL_DIR/drivers/Makefile"
+          grep -q 'source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig" || \
+            sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "$KERNEL_DIR/drivers/Kconfig"
 
       - name: Apply extra patches
         if: ${{ inputs.extra_patches_dir != '' }}
@@ -245,7 +263,7 @@ jobs:
           KERNEL_TYPE="${{ inputs.kernel_type || 'LineageOS' }}" Scripts/package_anykernel.sh
 
       - name: Upload artifact
-        uses: ${{ env.UPLOAD_ARTIFACT_ACTION }}
+        uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ inputs.kernel_type || 'LineageOS' }}-NP2-ReSukiSU
           path: "kernel-${{ inputs.kernel_type || 'LineageOS' }}-NP2-ReSukiSU.zip"
@@ -253,7 +271,7 @@ jobs:
 
       - name: Upload .config for debugging
         if: always()
-        uses: ${{ env.UPLOAD_ARTIFACT_ACTION }}
+        uses: actions/upload-artifact@v4
         with:
           name: config-NP2-ReSukiSU
           path: kernel/out/.config
@@ -276,7 +294,7 @@ jobs:
 
       - name: Upload .rej files
         if: always() && steps.collect_rej.outputs.found == 'true'
-        uses: ${{ env.UPLOAD_ARTIFACT_ACTION }}
+        uses: actions/upload-artifact@v4
         with:
           name: rej-NP2-ReSukiSU
           path: rej/
